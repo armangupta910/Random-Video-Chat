@@ -39,6 +39,32 @@ def verify_room_and_role(room_code: str, user: str, peer: str, is_initiator_atte
 
     return True
 
+async def handle_abrupt_disconnect(username: str):
+    # Remove from active connections
+    await ws_manager.disconnect(username)
+
+    # Lookup room code directly
+    room_code = redis_client.get(f"user_room:{username}")
+    if not room_code:
+        return  # user was not in any room
+
+    key = f"room:{room_code}"
+    room = redis_client.hgetall(key)
+
+    # Notify peer(s)
+    for peer_name in room:
+        if peer_name != username:
+            await ws_manager.send(peer_name, {
+                "event": "peer-disconnected",
+                "message": f"{username} has disconnected"
+            })
+
+    # Clean up
+    redis_client.delete(key)
+    redis_client.delete(f"user_room:{username}")
+    for peer_name in room:
+        redis_client.delete(f"user_room:{peer_name}")
+
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await ws_manager.connect(username, websocket)
@@ -79,7 +105,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     "data": signal.data
                 })
 
+
     except WebSocketDisconnect:
         await ws_manager.disconnect(username)
-        # Notify peers (optional)
-        # Could publish 'peer-disconnected' message if needed
+        await handle_abrupt_disconnect(username)

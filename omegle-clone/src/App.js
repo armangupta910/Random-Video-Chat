@@ -15,7 +15,77 @@ function App() {
   const remoteVideoRef = useRef(null);
   const peerRef = useRef(null);
   const localStreamRef = useRef(null);
-  const initiatorFlagRef = useRef(null); // Use ref to avoid race conditions
+  const initiatorFlagRef = useRef(null);
+
+  // Cleanup function for peer disconnection
+  function cleanupPeerConnection() {
+    console.log("[cleanup] Cleaning up peer connection");
+    
+    // Destroy peer connection
+    if (peerRef.current) {
+      try {
+        peerRef.current.destroy();
+      } catch (e) {
+        console.error("[cleanup] peer destroy error:", e);
+      }
+      peerRef.current = null;
+    }
+    
+    // Stop local media tracks
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        track.stop();
+        console.log(`[cleanup] Stopped ${track.kind} track`);
+      });
+      localStreamRef.current = null;
+    }
+    
+    // Clear video elements
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    
+    // Close signaling WebSocket
+    if (signalWsRef.current) {
+      try {
+        signalWsRef.current.close();
+      } catch (e) {
+        console.error("[cleanup] signaling ws close error:", e);
+      }
+      signalWsRef.current = null;
+    }
+    
+    // Reset state
+    setRoomCode("");
+    setPeerName("");
+    setIsInitiator(null);
+    initiatorFlagRef.current = null;
+  }
+
+  // Find next match
+  async function findNextMatch() {
+    cleanupPeerConnection();
+    setStatus("searching");
+    
+    // Reopen signaling connection will happen when matched
+    // Matching WS should still be open, just send register again
+    try {
+      const resp = await fetch("http://localhost:8000/registerForMatching", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      const body = await resp.json();
+      console.log("[findNext] register resp:", body);
+      setStatus("queued");
+    } catch (e) {
+      console.error("[findNext] Register failed", e);
+      setStatus("register-failed");
+    }
+  }
 
   function openSignalingWS(username) {
     if (signalWsRef.current) return;
@@ -53,7 +123,6 @@ function App() {
     }
     
     if (msg.event === "signal") {
-      // Only create peer if we're the non-initiator AND peer doesn't exist yet
       if (!peerRef.current && !initiatorFlagRef.current) {
         console.log("[sigws] Creating peer as responder (receiving first signal)");
         const peerObj = new SimplePeer({
@@ -81,13 +150,25 @@ function App() {
           }
         });
         
-        peerObj.on("error", (err) => console.error("[peer] error:", err));
-        peerObj.on("close", () => console.log("[peer] closed"));
+        peerObj.on("connect", () => {
+          console.log("[peer] Connected!");
+          setStatus("connected");
+        });
+        
+        peerObj.on("error", (err) => {
+          console.error("[peer] error:", err);
+          setStatus("peer-error: " + err.message);
+        });
+        
+        peerObj.on("close", () => {
+          console.log("[peer] Connection closed by peer");
+          setStatus("peer-disconnected");
+          cleanupPeerConnection();
+        });
         
         peerRef.current = peerObj;
       }
       
-      // Signal the peer with incoming data
       if (peerRef.current) {
         try {
           peerRef.current.signal(msg.data);
@@ -103,11 +184,9 @@ function App() {
     }
     
     if (msg.event === "peer-disconnected") {
+      console.log("[sigws] Peer disconnected notification from server");
       setStatus("peer-disconnected");
-      if (peerRef.current) {
-        peerRef.current.destroy();
-        peerRef.current = null;
-      }
+      cleanupPeerConnection();
     }
   }
 
@@ -134,7 +213,7 @@ function App() {
           const peer = parts.find((p) => p !== username) || "";
           setPeerName(peer);
           setIsInitiator(initiator);
-          initiatorFlagRef.current = initiator; // Store in ref immediately
+          initiatorFlagRef.current = initiator;
           setStatus("matched");
 
           openSignalingWS(username);
@@ -163,6 +242,7 @@ function App() {
     
     ws.onclose = () => {
       console.log("[matchws] closed");
+      setStatus("matching-service-disconnected");
     };
     
     ws.onerror = (e) => console.error("[matchws] err", e);
@@ -200,9 +280,8 @@ function App() {
       });
       
       localVideoRef.current.srcObject = stream;
-      localStreamRef.current = stream; // FIX: Store stream in ref
+      localStreamRef.current = stream;
       
-      // Only create peer if initiator (responder creates on first signal)
       if (initiatorFlag) {
         console.log("[webrtc] Creating peer as initiator");
         const peerObj = new SimplePeer({
@@ -230,8 +309,21 @@ function App() {
           }
         });
         
-        peerObj.on("error", (err) => console.error("[peer] error:", err));
-        peerObj.on("close", () => console.log("[peer] closed"));
+        peerObj.on("connect", () => {
+          console.log("[peer] Connected!");
+          setStatus("connected");
+        });
+        
+        peerObj.on("error", (err) => {
+          console.error("[peer] error:", err);
+          setStatus("peer-error: " + err.message);
+        });
+        
+        peerObj.on("close", () => {
+          console.log("[peer] Connection closed by peer");
+          setStatus("peer-disconnected");
+          cleanupPeerConnection();
+        });
         
         peerRef.current = peerObj;
       }
@@ -256,6 +348,9 @@ function App() {
     };
   }, []);
 
+  const isConnected = status === "connected";
+  const isDisconnected = status === "peer-disconnected";
+
   return (
     <div style={{ padding: 20, fontFamily: "sans-serif" }}>
       <h1>Mini Omegle (React)</h1>
@@ -272,29 +367,86 @@ function App() {
       ) : (
         <div>
           <p><strong>Name:</strong> {name}</p>
-          <p><strong>Status:</strong> {status}</p>
+          <p>
+            <strong>Status:</strong>{" "}
+            <span style={{ 
+              color: isConnected ? "green" : isDisconnected ? "red" : "orange",
+              fontWeight: "bold"
+            }}>
+              {status}
+            </span>
+          </p>
           <p><strong>Room:</strong> {roomCode || "-"}</p>
           <p><strong>Peer:</strong> {peerName || "-"}</p>
           <p><strong>Role:</strong> {isInitiator === null ? "-" : isInitiator ? "initiator" : "responder"}</p>
           
+          {isDisconnected && (
+            <div style={{ 
+              padding: 15, 
+              background: "#fff3cd", 
+              border: "1px solid #ffc107",
+              borderRadius: 5,
+              marginTop: 10,
+              marginBottom: 10
+            }}>
+              <p style={{ margin: "0 0 10px 0", fontWeight: "bold" }}>
+                ⚠️ Peer disconnected
+              </p>
+              <button 
+                onClick={findNextMatch}
+                style={{ 
+                  padding: "8px 16px",
+                  background: "#007bff",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer"
+                }}
+              >
+                Find Next Match
+              </button>
+            </div>
+          )}
+          
+          {isConnected && (
+            <button 
+              onClick={() => {
+                if (window.confirm("Are you sure you want to skip this person?")) {
+                  findNextMatch();
+                }
+              }}
+              style={{ 
+                padding: "8px 16px",
+                background: "#dc3545",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                marginTop: 10
+              }}
+            >
+              Skip / Next Person
+            </button>
+          )}
+          
           <div style={{ display: "flex", gap: 20, marginTop: 20 }}>
             <div>
-              <h3>Local</h3>
+              <h3>Local (You)</h3>
               <video
                 ref={localVideoRef}
                 autoPlay
                 playsInline
                 muted
-                style={{ width: 320, height: 240, background: "#000" }}
+                style={{ width: 320, height: 240, background: "#000", borderRadius: 8 }}
               />
             </div>
             <div>
-              <h3>Remote</h3>
+              <h3>Remote (Stranger)</h3>
               <video
                 ref={remoteVideoRef}
                 autoPlay
                 playsInline
-                style={{ width: 320, height: 240, background: "#000" }}
+                style={{ width: 320, height: 240, background: "#000", borderRadius: 8 }}
               />
             </div>
           </div>

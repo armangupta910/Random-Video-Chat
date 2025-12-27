@@ -41,16 +41,19 @@ def store_room(room_code: str, initiator: str, responder: str):
         responder: "responder"
     })
 
-    redis_client.expire(key)
+    redis_client.expire(key, 300)
 
     # Store reverse mapping: user -> room_code
-    redis_client.set(f"user_room:{initiator}", room_code)
-    redis_client.set(f"user_room:{responder}", room_code)
+    redis_client.set(f"user_room:{initiator}", room_code, ex=300)
+    redis_client.set(f"user_room:{responder}", room_code, ex=300)
 
 
 async def handle_post_match(user1_raw, user2_raw):
+    print("Post Match")
     user1 = json.loads(user1_raw)
     user2 = json.loads(user2_raw)
+
+    print(user1['name'], user2['name'])
 
     # WebSocket calls (async)
     room_code = str(user1['name']) + "_" + str(user2['name'])
@@ -94,6 +97,32 @@ def match_worker():
         )
 
 
+async def handle_skip(username: str):
+    # Remove from active connections
+    await ws_manager.disconnect(username)
+
+    # Lookup room code directly
+    room_code = redis_client.get(f"user_room:{username}")
+    if not room_code:
+        return  # user was not in any room
+
+    key = f"room:{room_code}"
+    room = redis_client.hgetall(key)
+
+    # Notify peer(s)
+    for peer_name in room:
+        if peer_name != username:
+            await ws_manager.send(peer_name, {
+                "event": "peer-disconnected",
+                "message": f"{username} has disconnected"
+            })
+
+    # Clean up
+    redis_client.delete(key)
+    redis_client.delete(f"user_room:{username}")
+    for peer_name in room:
+        redis_client.delete(f"user_room:{peer_name}")
+    
 '''
 ============= Startup =============
 '''
@@ -126,6 +155,7 @@ async def root():
 @app.post("/registerForMatching")
 async def register_for_matching(user: User):
     redis_client.rpush(MATCH_QUEUE, user.json())
+    handle_skip(user.name)
 
     return {
         "status": "queued",
