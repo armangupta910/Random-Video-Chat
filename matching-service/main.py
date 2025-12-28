@@ -49,11 +49,8 @@ def store_room(room_code: str, initiator: str, responder: str):
 
 
 async def handle_post_match(user1_raw, user2_raw):
-    print("Post Match")
     user1 = json.loads(user1_raw)
     user2 = json.loads(user2_raw)
-
-    print(user1['name'], user2['name'])
 
     # WebSocket calls (async)
     room_code = str(user1['name']) + "_" + str(user2['name'])
@@ -71,10 +68,9 @@ async def handle_post_match(user1_raw, user2_raw):
         "initiator": False
     })
 
-    print(f"Matched {user1['name']} <-> {user2['name']} in room {room_code}")
+    print(f"Matched {user1['name']} <-> {user2['name']}")
 
 def match_worker():
-    print("Matching Started")
     backoff = INITIAL_BACKOFF
 
     while True:
@@ -139,7 +135,6 @@ async def websocket_endpoint(websocket: WebSocket, name: str):
     await ws_manager.connect(name, websocket)
     try:
         while True:
-            # Keep connection alive (client may send pings)
             await websocket.receive_text()
     except WebSocketDisconnect:
         await ws_manager.disconnect(name)

@@ -26,13 +26,10 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 def verify_room_and_role(room_code: str, user: str, peer: str, is_initiator_attempt: bool) -> bool:
     key = f"room:{room_code}"
     if not redis_client.exists(key):
-        print("key doesnot exist")
         return False
 
     user_role = redis_client.hget(key, user)
     peer_role = redis_client.hget(key, peer)
-
-    print("User Role - " + user_role + " Peer Role - " + peer_role)
 
     if not user_role or not peer_role:
         return False
@@ -76,19 +73,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     try:
         while True:
             msg = await websocket.receive_json()
-            print(str(msg))
             signal = SignalMessage(**msg)
 
-            print("Message reveived from user " + username + " of type " + str(signal.type) + " and event " + str(signal.event))
-
-            # Handle join request
             if signal.event == "join":
-                # Check initiator only when starting connection
                 is_initiator = True if signal.type == "offer" else False
                 if not verify_room_and_role(signal.room_code, username, signal.target, is_initiator):
                     await websocket.send_json({"event": "error", "message": "Invalid room or role"})
                     continue
-                print("Join message from " + username)
                 key = f"room:{signal.room_code}"
                 user_role = redis_client.hget(key, username)
                 await websocket.send_json({
@@ -97,19 +88,11 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     "role": user_role
                 })
 
-                print("Join Successfull for user " + username)
-
-            # Handle signaling messages
             elif signal.event == "signal":
-                print("Signal event received for user "+username)
                 target_ws = ws_manager.active_connections.get(signal.target)
                 if not target_ws:
-                    print("Peer not found for user " + username)
                     await websocket.send_json({"event": "error", "message": "Peer not connected"})
                     continue
-                
-                print("Signal message from " + username)
-                print(str(signal))
 
                 # Forward message to peer
                 await ws_manager.send(signal.target, {
