@@ -13,8 +13,8 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -65,6 +65,10 @@ async def handle_abrupt_disconnect(username: str):
     for peer_name in room:
         redis_client.delete(f"user_room:{peer_name}")
 
+@app.get("/")
+async def root():
+    return {"message": "This is signalling server of omegle clone."}
+
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await ws_manager.connect(username, websocket)
@@ -72,7 +76,10 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     try:
         while True:
             msg = await websocket.receive_json()
+            print(str(msg))
             signal = SignalMessage(**msg)
+
+            print("Message reveived from user " + username + " of type " + str(signal.type) + " and event " + str(signal.event))
 
             # Handle join request
             if signal.event == "join":
@@ -81,6 +88,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 if not verify_room_and_role(signal.room_code, username, signal.target, is_initiator):
                     await websocket.send_json({"event": "error", "message": "Invalid room or role"})
                     continue
+                print("Join message from " + username)
                 key = f"room:{signal.room_code}"
                 user_role = redis_client.hget(key, username)
                 await websocket.send_json({
@@ -89,12 +97,19 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     "role": user_role
                 })
 
+                print("Join Successfull for user " + username)
+
             # Handle signaling messages
             elif signal.event == "signal":
+                print("Signal event received for user "+username)
                 target_ws = ws_manager.active_connections.get(signal.target)
                 if not target_ws:
+                    print("Peer not found for user " + username)
                     await websocket.send_json({"event": "error", "message": "Peer not connected"})
                     continue
+                
+                print("Signal message from " + username)
+                print(str(signal))
 
                 # Forward message to peer
                 await ws_manager.send(signal.target, {

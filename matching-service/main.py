@@ -14,8 +14,8 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -150,7 +150,7 @@ async def websocket_endpoint(websocket: WebSocket, name: str):
 '''
 @app.get("/")
 async def root():
-    return {"message": "This is Omegle clone."}
+    return {"message": "This is matching server of omegle clone."}
 
 @app.post("/registerForMatching")
 async def register_for_matching(user: User):
