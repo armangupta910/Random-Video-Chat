@@ -86,6 +86,10 @@ def match_worker():
 
         backoff = INITIAL_BACKOFF
 
+        print("Matched, socket for users :- ")
+        for i in ws_manager.get_all_sockets():
+            print(i)
+
         post_match_executor.submit(
             run_async_task,
             handle_post_match(username1, username2)
@@ -131,6 +135,7 @@ def start_matcher():
 '''
 @app.websocket("/ws/{name}")
 async def websocket_endpoint(websocket: WebSocket, name: str):
+    print("Trying to add socket for user - " + name)
     await ws_manager.connect(name, websocket)
     try:
         while True:
@@ -148,12 +153,31 @@ async def root():
 
 @app.post("/registerForMatching")
 async def register_for_matching(user: User):
-    timestamp = time.time()
-    redis_client.zadd(MATCH_QUEUE, {user.name: timestamp})
+    # Check if user already exists in queue
+    existing_score = redis_client.zscore(MATCH_QUEUE, user.name)
+    
+    if existing_score is not None:
+        # await handle_skip(user.name)
+        # await ws_manager.disconnect(user.name)
+        return {
+            "status": "exists",
+            "message": "Username already exists in queue"
+        }
+    
+    try:
+        timestamp = time.time()
+        redis_client.zadd(MATCH_QUEUE, {user.name: timestamp})
+        print("Added " + user.name + " to the Matching Queue")
 
-    handle_skip(user.name)
-
-    return {
-        "status": "queued",
-        "message": "User added to matching queue"
-    }
+        # await handle_skip(user.name)
+        
+        return {
+            "status": "queued",
+            "message": "User added to matching queue"
+        }
+    except Exception as e:
+        print(f"Error registering user: {e}")
+        return {
+            "status": "error",
+            "message": "Internal server error"
+        }
