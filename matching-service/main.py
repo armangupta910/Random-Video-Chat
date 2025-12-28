@@ -139,7 +139,30 @@ async def websocket_endpoint(websocket: WebSocket, name: str):
     await ws_manager.connect(name, websocket)
     try:
         while True:
-            await websocket.receive_text()
+            received_message = await websocket.receive_text()
+            
+            # Parse incoming message
+            try:
+                data = json.loads(received_message)
+                
+                # Handle chat messages
+                if data.get("event") == "chat":
+                    peer_name = data.get("peer")
+                    message = data.get("message", "")
+                    
+                    if peer_name and message:
+                        # Send message directly to the peer
+                        await ws_manager.send(peer_name, {
+                            "event": "chat",
+                            "sender": name,
+                            "message": message,
+                            "timestamp": time.time()
+                        })
+                        print(f"Chat: {name} → {peer_name}: {message}")
+                            
+            except json.JSONDecodeError:
+                print(f"Invalid JSON from {name}: {received_message}")
+            
     except WebSocketDisconnect:
         await ws_manager.disconnect(name)
         redis_client.zrem(MATCH_QUEUE, name)
