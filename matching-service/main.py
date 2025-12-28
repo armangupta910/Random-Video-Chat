@@ -48,33 +48,31 @@ def store_room(room_code: str, initiator: str, responder: str):
     redis_client.set(f"user_room:{responder}", room_code, ex=300)
 
 
-async def handle_post_match(user1_raw, user2_raw):
-    user1 = json.loads(user1_raw)
-    user2 = json.loads(user2_raw)
+async def handle_post_match(username1, username2):
 
     # WebSocket calls (async)
-    room_code = str(user1['name']) + "_" + str(user2['name'])
-    store_room(room_code, user1["name"], user2["name"])
+    room_code = username1 + "_" + username2
+    store_room(room_code, username1, username2)
 
-    await ws_manager.send(user1["name"], {
+    await ws_manager.send(username1, {
         "event": "matched",
         "room_code": room_code,
         "initiator": True
     })
 
-    await ws_manager.send(user2["name"], {
+    await ws_manager.send(username2, {
         "event": "matched",
         "room_code": room_code,
         "initiator": False
     })
 
-    print(f"Matched {user1['name']} <-> {user2['name']}")
+    print(f"Matched {username1} <-> {username2}")
 
 def match_worker():
     backoff = INITIAL_BACKOFF
 
     while True:
-        queue_size = redis_client.llen(MATCH_QUEUE)
+        queue_size = redis_client.zcard(MATCH_QUEUE)
 
         # Not enough users → backoff
         if queue_size < 2:
@@ -82,14 +80,15 @@ def match_worker():
             backoff = min(backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF)
             continue
         
-        user1 = redis_client.lpop(MATCH_QUEUE)
-        user2 = redis_client.lpop(MATCH_QUEUE)
+        users = redis_client.zpopmin(MATCH_QUEUE, 2)
+        username1 = users[0][0]
+        username2 = users[1][0]
 
         backoff = INITIAL_BACKOFF
 
         post_match_executor.submit(
             run_async_task,
-            handle_post_match(user1, user2)
+            handle_post_match(username1, username2)
         )
 
 
@@ -138,7 +137,7 @@ async def websocket_endpoint(websocket: WebSocket, name: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         await ws_manager.disconnect(name)
-
+        redis_client.zrem(MATCH_QUEUE, name)
 
 '''
 ============= APIs =============
@@ -149,7 +148,9 @@ async def root():
 
 @app.post("/registerForMatching")
 async def register_for_matching(user: User):
-    redis_client.rpush(MATCH_QUEUE, user.json())
+    timestamp = time.time()
+    redis_client.zadd(MATCH_QUEUE, {user.name: timestamp})
+
     handle_skip(user.name)
 
     return {
